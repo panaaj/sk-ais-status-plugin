@@ -1,0 +1,175 @@
+{
+  "openapi": "3.0.0",
+  "info": {
+    "version": "2.5.0",
+    "title": "Signal K Flags API",
+    "description": "API endpoints exposed by `signalk-flags` plugin for displaying flags based on MMSI or country code.",
+    "termsOfService": "http://signalk.org/terms/",
+    "license": {
+      "name": "Apache 2.0",
+      "url": "http://www.apache.org/licenses/LICENSE-2.0.html"
+    }
+  },
+  "externalDocs": {
+    "url": "http://signalk.org/specification/",
+    "description": "Signal K specification."
+  },
+  "servers": [
+    {
+      "url": "/"
+    }
+  ],
+  "tags": [
+    {
+      "name": "Flags",
+      "description": "Endpoints for retrieving country flags."
+    }
+  ],
+  "components": {
+    "schemas": {},
+    "responses": {
+      "200OKResponse": {
+        "description": "Successful operation",
+        "content": {
+          "application/json": {
+            "schema": {
+              "type": "object",
+              "description": "Request success response",
+              "properties": {
+                "state": {
+                  "type": "string",
+                  "enum": ["COMPLETED"]
+                },
+                "statusCode": {
+                  "type": "number",
+                  "enum": [200]
+                }
+              },
+              "required": ["state", "statusCode"]
+            }
+          }
+        }
+      },
+      "ErrorResponse": {
+        "description": "Failed operation",
+        "content": {
+          "application/json": {
+            "schema": {
+              "type": "object",
+              "description": "Request error response",
+              "properties": {
+                "state": {
+                  "type": "string",
+                  "enum": ["FAILED"]
+                },
+                "statusCode": {
+                  "type": "number",
+                  "enum": [404]
+                },
+                "message": {
+                  "type": "string"
+                }
+              },
+              "required": ["state", "statusCode", "message"]
+            }
+          }
+        }
+      }
+    },
+    "parameters": {
+      "mmsi": {
+        "in": "path",
+        "required": true,
+        "name": "mmsi",
+        "description": "Maritime Mobile Service Identity (MMSI).",
+        "schema": {
+          "type": "number",
+          "minLength": 9,
+          "maxLength": 9,
+          "example": 520345561
+        }
+      },
+      "countryCode": {
+        "in": "path",
+        "required": true,
+        "name": "code",
+        "description": "Two letter country code.",
+        "schema": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 2,
+          "example": "al"
+        }
+      },
+      "aspect": {
+        "in": "query",
+        "required": false,
+        "name": "aspect",
+        "description": "Aspect of flag image to return. 4x3 (default)",
+        "schema": {
+          "type": "string",
+          "enum": ["4x3", "1x1"]
+        }
+      }
+    },
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT"
+      },
+      "cookieAuth": {
+        "type": "apiKey",
+        "in": "cookie",
+        "name": "JAUTHENTICATION"
+      }
+    }
+  },
+  "security": [{ "cookieAuth": [] }, { "bearerAuth": [] }],
+  "paths": {
+    "/signalk/v2/api/resources/flags/mmsi/{mmsi}": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/mmsi"
+        },
+        {
+          "$ref": "#/components/parameters/aspect"
+        }
+      ],
+      "get": {
+        "tags": ["Flags"],
+        "summary": "Returns flag for supplied MMSI.",
+        "responses": {
+          "default": {
+            "description": "Return SVG content for flag derived from the supplied MMSI.",
+            "content": {
+              "image/svg+xml": {}
+            }
+          }
+        }
+      }
+    },
+    "/signalk/v2/api/resources/flags/country/{code}": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/countryCode"
+        },
+        {
+          "$ref": "#/components/parameters/aspect"
+        }
+      ],
+      "get": {
+        "tags": ["Flags"],
+        "summary": "Returns flag for supplied country code.",
+        "responses": {
+          "default": {
+            "description": "Return SVG content for flag derived from the supplied country code.",
+            "content": {
+              "image/svg+xml": {}
+            }
+          }
+        }
+      }
+    }
+  }
+}
