@@ -1,10 +1,10 @@
-# Signal K AIS Processing Plugin:
+# Signal K AIS Status Plugin:
 
 ## About
-This plugin ingests Signal K AIS deltas, builds and maintains target tracks, applies state governance rules to those tracks, and streams current targets. It normalizes identity by context/MMSI, maintains trails, and applies class‑specific thresholds to confirm, mark lost, and remove targets over time using configurable plugin parameters.
+This plugin evaluates AIS target reporting continuity and maintains a per-target tracking state using class-specific timing thresholds. It publishes target tracking ***(metadata or path value???)*** to Signal K, enabling consuming applications to assess target validity, reliability, and reporting continuity.
 
-## AIS Statemanagement
-These rules define how AIS targets are created, updated, confirmed, marked lost, and removed, so consumers displays consistent, timely, and reliable targets.
+## AIS Target Tracking State Management
+The plugin applies standardized timing and continuity rules to manage AIS targets throughout their tracking lifecycle. Targets are created on first reception, transition to a confirmed tracking state after sufficient report continuity, and are marked as lost when expected reports are no longer received. The resulting tracking state is continuously updated and published for use by downstream consumers.
 
 ### Sources (input scope)
 Subscribes to all delta of with the following context to determine which entities/updates are tracked:
