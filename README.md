@@ -9,12 +9,12 @@ The plugin applies standardized timing and continuity rules to manage AIS target
 ### Sources (input scope)
 Subscribes to all delta of with the following context to determine which entities/updates are tracked:
 - vessels
-- ATONS
+- AtoNs
 - basestations
 - SAR
-- Aircraft
+- aircraft
 
-### Track identity & indexing (stable identity)
+### target identity & indexing (stable identity)
 Context (atons.urn:mrn:imo:mmsi:*) is the plugin's AIS target registry primary key. One item per AIS context. The context is used to funnel all delta updates onto one map object for fast computation. MMSI is indexed when present to unify identity and detect conflicts (such as MMSI reuse issues).
 
 Using context as the primary key has the benefit of being able to pre populate tracks with data before receiving the MMSI delta.
