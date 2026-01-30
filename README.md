@@ -28,10 +28,10 @@ msgCount increments only if position timestamps differ by >500 ms; each valid re
 Class A confirms quickly and times out quickly; Class B confirms slower and times out slower.
 
 ### State machine (status consistency)
-MMSI conflict -> force unconfirmed state. Otherwise confirm if enough reports within confirmMaxAge, mark lost after lostAfter, else unconfirmed.
+MMSI conflict or not enough message received -> force unconfirmed state. Otherwise confirm if enough reports within threshold, mark lost after a periode no position is received, mark remove after a longer period without position..
 
 ### Removal (cleanup)
-It's up to the client to determine who it reacts to target state lost but lost implies it should not disregarded. Clients can use lastPositionReportAt and lastUpdate in their logic.
+It's up to the client to determine who it reacts to target state remove.
 
 ### Timing & publication (ressource consumption)
 Status evaluation runs on a schedule. It defaults to every 1s but the schedule is exposed as a plugin parameter.
