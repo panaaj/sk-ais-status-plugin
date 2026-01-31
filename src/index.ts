@@ -41,6 +41,27 @@ const AIS_CLASS_DEFAULTS: Record<string, ClassDefault> = {
     lostAfter: 180000,
     removeAfter: 600000,
     interpHz: 500
+  },
+  ATON: {
+    confirmAfterMsgs: 1,
+    confirmMaxAge: 180000,
+    lostAfter: 900000,
+    removeAfter: 3600000,
+    interpHz: 0
+  },
+  BASE: {
+    confirmAfterMsgs: 1,
+    confirmMaxAge: 120000,
+    lostAfter: 600000,
+    removeAfter: 1800000,
+    interpHz: 0
+  },
+  SAR: {
+    confirmAfterMsgs: 1,
+    confirmMaxAge: 10000,
+    lostAfter: 30000,
+    removeAfter: 120000,
+    interpHz: 2000
   }
 }
 
@@ -191,7 +212,7 @@ module.exports = (server: SKAisApp): Plugin => {
 
     let p = server.getPath(`${context}.sensors.ais.class`)
     // process class values and default to A if missing or invalid
-    let aisClass = !p?.value ? 'A' : p.value.length > 1 ? p.value[0] : p.value
+    let aisClass = !p?.value ? 'A' : p.value
     aisClass = Object.keys(AIS_CLASS_DEFAULTS).includes(aisClass)
       ? aisClass
       : 'A'
