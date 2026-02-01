@@ -69,7 +69,7 @@ const AIS_DEFAULTS = {
 **Trigger:** Status Interval Timer Event
 | Condition | Action |
 |---        |---     |
-| `Date.now() - lastPosition` > `confirmMaxAge` | `status` = **'stale'** <br>`msgCount` -> ?? <br>`lastposition` -> unchanged |
+| `Date.now() - lastPosition` > `confirmMaxAge` | `status` = **??** <br>`msgCount` -> **??** <br>`lastposition` -> unchanged |
 | `Date.now() - lastPosition` > `lostAfter` | `status` = **'lost'** <br>`msgCount` = 0 <br>`lastposition` -> unchanged |
 | `Date.now() - lastPosition` > `removeAfter` | `status` = **'remove'** <br>`msgCount` = 0 <br>`lastposition` -> unchanged |
 

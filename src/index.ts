@@ -21,7 +21,7 @@ interface TargetDef {
 
 /**
  * @property confirmAfterMsgs Number of messages to receive before status is set to "confirmed"
- * @property confirmMaxAge Maximum interval (msec) between received messages before status is set to "stale"
+ * @property confirmMaxAge Maximum interval (msec) between transmitted messages
  * @property lostAfter Maximum interval (msec) between received messages before status is set to "lost"
  * @property removeAfter Maximum interval (msec) between received messages before status is set to "remove"
  * @property interpHz Minimum interval (msec) to elapse between received messages for msgCount to be incremented
@@ -37,7 +37,6 @@ interface ClassDefault {
 enum AIS_STATUS {
   unconfirmed = 'unconfirmed',
   confirmed = 'confirmed',
-  stale = 'stale',
   lost = 'lost',
   remove = 'remove'
 }
@@ -243,9 +242,6 @@ module.exports = (server: SKAisApp): Plugin => {
         rmIds.push(k)
         v.msgCount = 0
         emitAisStatus(k, AIS_STATUS.lost)
-      } else if (tDiff >= AIS_CLASS_DEFAULTS[aisClass].confirmMaxAge) {
-        rmIds.push(k)
-        emitAisStatus(k, AIS_STATUS.stale)
       }
     })
   }
