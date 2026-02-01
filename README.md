@@ -34,7 +34,7 @@ MMSI conflict or not enough message received -> force unconfirmed state. Otherwi
 It's up to the client to determine who it reacts to target state remove.
 
 ### Timing & publication (ressource consumption)
-Status evaluation runs on a schedule. It defaults to every 1s but the schedule is exposed as a plugin parameter.
+Status evaluation runs at an interval short enough to accomodate the lowest `confirmMaxAge` value.
 
 ## State Management parameters
 
@@ -57,6 +57,21 @@ const AIS_DEFAULTS = {
   }
 }
 ```
+
+## State Management lifecycle
+
+**Trigger:** `<context>.navigation.position` received
+| Condition | Action |
+|---        |---     |
+| `msgCount` < `confirmAfterMsgs` | `status` = **'unconfirmed'** <br>`msgCount` -> increment <br>`lastposition` = `Date.now()` |
+| `msgCount` >= `confirmAfterMsgs` | `status` = **'confirmed'** <br>`msgCount` -> unchanged <br>`lastposition` = `Date.now()`
+
+**Trigger:** Status Interval Timer Event
+| Condition | Action |
+|---        |---     |
+| `Date.now() - lastPosition` > `confirmMaxAge` | `status` = **'stale'** <br>`msgCount` -> ?? <br>`lastposition` -> unchanged |
+| `Date.now() - lastPosition` > `lostAfter` | `status` = **'lost'** <br>`msgCount` = 0 <br>`lastposition` -> unchanged |
+| `Date.now() - lastPosition` > `removeAfter` | `status` = **'remove'** <br>`msgCount` = 0 <br>`lastposition` -> unchanged |
 
 ### Target Selection
 ``` typescript

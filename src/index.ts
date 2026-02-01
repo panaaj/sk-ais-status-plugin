@@ -19,6 +19,13 @@ interface TargetDef {
   msgCount: number
 }
 
+/**
+ * @property confirmAfterMsgs Number of messages to receive before status is set to "confirmed"
+ * @property confirmMaxAge Maximum interval (msec) between received messages before status is set to "stale"
+ * @property lostAfter Maximum interval (msec) between received messages before status is set to "lost"
+ * @property removeAfter Maximum interval (msec) between received messages before status is set to "remove"
+ * @property interpHz Minimum interval (msec) to elapse between received messages for msgCount to be incremented
+ */
 interface ClassDefault {
   confirmAfterMsgs: number
   confirmMaxAge: number // msecs
@@ -27,43 +34,53 @@ interface ClassDefault {
   interpHz: number // msecs
 }
 
+enum AIS_STATUS {
+  unconfirmed = 'unconfirmed',
+  confirmed = 'confirmed',
+  stale = 'stale',
+  lost = 'lost',
+  remove = 'remove'
+}
+
 const AIS_CLASS_DEFAULTS: Record<string, ClassDefault> = {
   A: {
     confirmAfterMsgs: 2,
-    confirmMaxAge: 30000,
-    lostAfter: 60000,
-    removeAfter: 180000,
+    confirmMaxAge: 3 * 60000, // 3 min when moored, < 10 sec when moving)
+    lostAfter: 6 * 60000,
+    removeAfter: 9 * 60000,
     interpHz: 1000
   },
   B: {
     confirmAfterMsgs: 3,
-    confirmMaxAge: 90000,
-    lostAfter: 180000,
-    removeAfter: 600000,
+    confirmMaxAge: 3 * 60000, // 3 min when moored, < 30 sec when moving)
+    lostAfter: 6 * 60000,
+    removeAfter: 9 * 60000,
     interpHz: 500
   },
   ATON: {
     confirmAfterMsgs: 1,
-    confirmMaxAge: 180000,
-    lostAfter: 900000,
-    removeAfter: 3600000,
+    confirmMaxAge: 3 * 60000, // 3 min nominal
+    lostAfter: 15 * 60000, // 15 min = timeout / loss
+    removeAfter: 60 * 60000,
     interpHz: 0
   },
   BASE: {
     confirmAfterMsgs: 1,
-    confirmMaxAge: 120000,
-    lostAfter: 600000,
-    removeAfter: 1800000,
+    confirmMaxAge: 10000, // 10 sec nominal
+    lostAfter: 30000,
+    removeAfter: 3 * 60000,
     interpHz: 0
   },
   SAR: {
     confirmAfterMsgs: 1,
-    confirmMaxAge: 10000,
+    confirmMaxAge: 10000, // 10 sec nominal
     lostAfter: 30000,
-    removeAfter: 120000,
+    removeAfter: 3 * 60000,
     interpHz: 2000
   }
 }
+
+const STATUS_CHECK_INTERVAL = 5000
 
 const CONFIG_SCHEMA = {
   properties: {}
@@ -73,6 +90,7 @@ const CONFIG_UISCHEMA = {}
 
 module.exports = (server: SKAisApp): Plugin => {
   let subscriptions: any[] = [] // stream subscriptions
+  let timers: Array<NodeJS.Timeout> = [] // interval timers
 
   const plugin: Plugin = {
     id: 'sk-ais-status',
@@ -119,6 +137,9 @@ module.exports = (server: SKAisApp): Plugin => {
     server.debug('** Un-registering Update Handler(s) **')
     subscriptions.forEach((b) => b())
     subscriptions = []
+    server.debug('** Stopping Timer(s) **')
+    timers.forEach((t) => clearInterval(t))
+    timers = []
     const msg = 'Stopped.'
     server.setPluginStatus(msg)
   }
@@ -131,6 +152,7 @@ module.exports = (server: SKAisApp): Plugin => {
     // setup subscriptions
     initSubscriptions()
     self = server.getPath('self')
+    timers.push(setInterval(() => checkStatus(), STATUS_CHECK_INTERVAL))
   }
 
   // register DELTA stream message handler
@@ -205,17 +227,35 @@ module.exports = (server: SKAisApp): Plugin => {
     server.error(`${plugin.id} Error: ${error}`)
   }
 
+  /**
+   * Check and update AIS target(s) status
+   */
+  const checkStatus = () => {
+    const rmIds: Context[] = []
+    targets.forEach((v: TargetDef, k: Context) => {
+      const aisClass = getAisClass(k)
+      const tDiff = Date.now() - v.lastPosition
+      if (tDiff >= AIS_CLASS_DEFAULTS[aisClass].removeAfter) {
+        rmIds.push(k)
+        v.msgCount = 0
+        emitAisStatus(k, AIS_STATUS.remove)
+      } else if (tDiff >= AIS_CLASS_DEFAULTS[aisClass].lostAfter) {
+        rmIds.push(k)
+        v.msgCount = 0
+        emitAisStatus(k, AIS_STATUS.lost)
+      } else if (tDiff >= AIS_CLASS_DEFAULTS[aisClass].confirmMaxAge) {
+        rmIds.push(k)
+        emitAisStatus(k, AIS_STATUS.stale)
+      }
+    })
+  }
+
   /** Process target after position message */
   const processTarget = (context: Context) => {
     const target: TargetDef = targets.get(context) as TargetDef
     if (!target) return
 
-    let p = server.getPath(`${context}.sensors.ais.class`)
-    // process class values and default to A if missing or invalid
-    let aisClass = !p?.value ? 'A' : p.value
-    aisClass = Object.keys(AIS_CLASS_DEFAULTS).includes(aisClass)
-      ? aisClass
-      : 'A'
+    const aisClass = getAisClass(context)
 
     const tDiff = Date.now() - target?.lastPosition
     // interpHz threshold met?
@@ -225,9 +265,35 @@ module.exports = (server: SKAisApp): Plugin => {
     target.msgCount++
 
     // confirmMsg threshold met?
-    if (target.msgCount >= AIS_CLASS_DEFAULTS[aisClass].confirmAfterMsgs) {
+    if (target.msgCount < AIS_CLASS_DEFAULTS[aisClass].confirmAfterMsgs) {
+      //server.debug('*** unconfirmed', target.msgCount, context, aisClass)
+      target.msgCount++
+      emitAisStatus(context, AIS_STATUS.unconfirmed)
+    } else {
       //server.debug('*** confirmed', target.msgCount, context, aisClass)
-      target.msgCount = 0
+      emitAisStatus(context, AIS_STATUS.confirmed)
+    }
+    targets.set(context, target)
+  }
+
+  /**
+   * Return AIS Class of supplied Context
+   * @param context Signal K context
+   * @returns AIS class (defaults to 'A' if missing or invalid)
+   */
+  const getAisClass = (context: Context): string => {
+    let p = server.getPath(`${context}.sensors.ais.class`)
+    let c = p?.value ?? 'A'
+    return Object.keys(AIS_CLASS_DEFAULTS).includes(c) ? c : 'A'
+  }
+
+  /**
+   * Emits sensors.ais.status delta
+   * @param context Signal K context
+   */
+  const emitAisStatus = (context: Context, status: AIS_STATUS) => {
+    let currStatus = server.getPath(`${context}.sensors.ais.status`)
+    if (status !== currStatus?.value) {
       server.handleMessage(
         plugin.id,
         {
@@ -237,7 +303,7 @@ module.exports = (server: SKAisApp): Plugin => {
               values: [
                 {
                   path: 'sensors.ais.status' as Path,
-                  value: 'confirmed'
+                  value: status
                 }
               ]
             }
@@ -246,7 +312,6 @@ module.exports = (server: SKAisApp): Plugin => {
         SKVersion.v1
       )
     }
-    targets.set(context, target)
   }
 
   return plugin
