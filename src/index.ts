@@ -24,14 +24,12 @@ interface TargetDef {
  * @property confirmMaxAge Maximum interval (msec) between transmitted messages
  * @property lostAfter Maximum interval (msec) between received messages before status is set to "lost"
  * @property removeAfter Maximum interval (msec) between received messages before status is set to "remove"
- * @property interpHz Minimum interval (msec) to elapse between received messages for msgCount to be incremented
  */
 interface ClassDefault {
   confirmAfterMsgs: number
   confirmMaxAge: number // msecs
   lostAfter: number // msecs
   removeAfter: number // msecs
-  interpHz: number // msecs
 }
 
 enum AIS_STATUS {
@@ -46,36 +44,31 @@ const AIS_CLASS_DEFAULTS: Record<string, ClassDefault> = {
     confirmAfterMsgs: 2,
     confirmMaxAge: 3 * 60000, // 3 min when moored, < 10 sec when moving)
     lostAfter: 6 * 60000,
-    removeAfter: 9 * 60000,
-    interpHz: 1000
+    removeAfter: 9 * 60000
   },
   B: {
     confirmAfterMsgs: 3,
     confirmMaxAge: 3 * 60000, // 3 min when moored, < 30 sec when moving)
     lostAfter: 6 * 60000,
-    removeAfter: 9 * 60000,
-    interpHz: 500
+    removeAfter: 9 * 60000
   },
   ATON: {
     confirmAfterMsgs: 1,
     confirmMaxAge: 3 * 60000, // 3 min nominal
     lostAfter: 15 * 60000, // 15 min = timeout / loss
-    removeAfter: 60 * 60000,
-    interpHz: 0
+    removeAfter: 60 * 60000
   },
   BASE: {
     confirmAfterMsgs: 1,
     confirmMaxAge: 10000, // 10 sec nominal
     lostAfter: 30000,
-    removeAfter: 3 * 60000,
-    interpHz: 0
+    removeAfter: 3 * 60000
   },
   SAR: {
     confirmAfterMsgs: 1,
     confirmMaxAge: 10000, // 10 sec nominal
     lostAfter: 30000,
-    removeAfter: 3 * 60000,
-    interpHz: 2000
+    removeAfter: 3 * 60000
   }
 }
 
@@ -226,6 +219,42 @@ module.exports = (server: SKAisApp): Plugin => {
     server.error(`${plugin.id} Error: ${error}`)
   }
 
+  /** Process target after position message */
+  const processTarget = (context: Context) => {
+    const target: TargetDef = targets.get(context) as TargetDef
+    if (!target) return
+
+    const msgNo = target.msgCount + 1
+    const aisClass = getAisClass(context)
+    target.lastPosition = Date.now()
+
+    // confirmMsg threshold met?
+    if (msgNo < AIS_CLASS_DEFAULTS[aisClass].confirmAfterMsgs) {
+      server.debug(
+        `*** Msg Threshold (${msgNo} of ${AIS_CLASS_DEFAULTS[aisClass].confirmAfterMsgs}) not met -> unconfirmed`,
+        context,
+        aisClass
+      )
+      target.msgCount++
+      emitAisStatus(context, AIS_STATUS.unconfirmed)
+    } else {
+      //server.debug('*** -> confirmed', target.msgCount, context, aisClass)
+      emitAisStatus(context, AIS_STATUS.confirmed)
+    }
+    targets.set(context, target)
+  }
+
+  /**
+   * Return AIS Class of supplied Context
+   * @param context Signal K context
+   * @returns AIS class (defaults to 'A' if missing or invalid)
+   */
+  const getAisClass = (context: Context): string => {
+    let p = server.getPath(`${context}.sensors.ais.class`)
+    let c = p?.value ?? 'A'
+    return Object.keys(AIS_CLASS_DEFAULTS).includes(c) ? c : 'A'
+  }
+
   /**
    * Check and update AIS target(s) status
    */
@@ -244,43 +273,6 @@ module.exports = (server: SKAisApp): Plugin => {
         emitAisStatus(k, AIS_STATUS.lost)
       }
     })
-  }
-
-  /** Process target after position message */
-  const processTarget = (context: Context) => {
-    const target: TargetDef = targets.get(context) as TargetDef
-    if (!target) return
-
-    const aisClass = getAisClass(context)
-
-    const tDiff = Date.now() - target?.lastPosition
-    // interpHz threshold met?
-    if (tDiff < AIS_CLASS_DEFAULTS[aisClass].interpHz) return
-
-    target.lastPosition = Date.now()
-    target.msgCount++
-
-    // confirmMsg threshold met?
-    if (target.msgCount < AIS_CLASS_DEFAULTS[aisClass].confirmAfterMsgs) {
-      //server.debug('*** unconfirmed', target.msgCount, context, aisClass)
-      target.msgCount++
-      emitAisStatus(context, AIS_STATUS.unconfirmed)
-    } else {
-      //server.debug('*** confirmed', target.msgCount, context, aisClass)
-      emitAisStatus(context, AIS_STATUS.confirmed)
-    }
-    targets.set(context, target)
-  }
-
-  /**
-   * Return AIS Class of supplied Context
-   * @param context Signal K context
-   * @returns AIS class (defaults to 'A' if missing or invalid)
-   */
-  const getAisClass = (context: Context): string => {
-    let p = server.getPath(`${context}.sensors.ais.class`)
-    let c = p?.value ?? 'A'
-    return Object.keys(AIS_CLASS_DEFAULTS).includes(c) ? c : 'A'
   }
 
   /**
