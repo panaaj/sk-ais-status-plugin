@@ -35,11 +35,11 @@ Each `navigation.position` update advances the tracking state and updates `lastP
 Class A confirms quickly and times out quickly; Class B confirms slower and times out slower, etc. See [Device Class Processing Definition](#device-class-processing-definition) for class details. 
 
 ### State machine (status consistency)
-*Prior to first message, status will not exist.*
-- unconfirmed = Position received but minimum number of received messages threshold has not been met.
-- confirmed = Minimum number of messages have been received within the MaxAge threshold.
-- lost = No received messages within the LostAfter threshold.
-- remove = No received messages within the RemoveAfter threshold.
+*Prior to the first message, status will not exist.*
+- unconfirmed = A position has been received, but the minimum message threshold has not been met.
+- confirmed = The minimum number of messages has been received within the `confirmMaxAge` threshold.
+- lost = No messages have been received within the `lostAfter` threshold.
+- remove = No messages have been received within the `removeAfter` threshold.
 
 If not enough messages are received within `confirmMaxAge`, the confirmation process resets and the target remains `unconfirmed`. Once enough messages are received, status becomes `confirmed`. Targets become `lost` after a period of silence and `remove` after a longer period without position.
 
@@ -69,8 +69,29 @@ stateDiagram-v2
   remove --> unconfirmed: next position report\n(confirmAfterMsgs > 1)\n(new track)
 ```
 
+**Trigger:** `<context>.navigation.position` received
+| Condition | Action |
+|---        |---     |
+| `msgCount` < `confirmAfterMsgs` | `status` = **'unconfirmed'** <br>`msgCount` -> increment <br>`lastPosition` = `Date.now()` |
+| (`msgCount` >= `confirmAfterMsgs`) <= `confirmMaxAge` | `status` = **'confirmed'** <br>`msgCount` -> capped at `confirmAfterMsgs` <br>`lastPosition` = `Date.now()`
+
+If the time gap between unconfirmed messages exceeds `confirmMaxAge`, `msgCount` resets to `0` before the next increment.
+
+**Trigger:** Status Interval Timer Event
+| Condition | Action |
+|---        |---     |
+| `Date.now() - lastPosition` > `lostAfter` | `status` = **'lost'** <br>`msgCount` = 0 <br>`lastPosition` -> unchanged |
+| `Date.now() - lastPosition` > `removeAfter` | `status` = **'remove'** <br>`msgCount` = 0 <br>`lastPosition` -> unchanged <br> delete target from map |
+
 ### Timing & publication (resource consumption)
-Status evaluation runs on a fixed interval and applies `lostAfter` and `removeAfter` thresholds.
+The plugin emits Signal K deltas to the target context with:
+
+- Path: `sensors.ais.status`
+- Values: `unconfirmed`, `confirmed`, `lost`, `remove`
+
+There are two processes that generate delta updates:
+1. Position Update: runs when position is received and applies `unconfirmed` / `confirmed` logic.
+2. Status Check: runs on a fixed interval and applies `lostAfter` and `removeAfter` thresholds.
 
 ## State Management parameters
 
@@ -110,22 +131,7 @@ const AIS_CLASS_DEFAULTS = {
 }
 ```
 
-## State Management lifecycle
-Prior to first message sensors.ais.status path will not exist.
 
-**Trigger:** `<context>.navigation.position` received
-| Condition | Action |
-|---        |---     |
-| `msgCount` < `confirmAfterMsgs` | `status` = **'unconfirmed'** <br>`msgCount` -> increment <br>`lastPosition` = `Date.now()` |
-| (`msgCount` >= `confirmAfterMsgs`) <= `confirmMaxAge` | `status` = **'confirmed'** <br>`msgCount` -> capped at `confirmAfterMsgs` <br>`lastPosition` = `Date.now()`
-
-If the time gap between unconfirmed messages exceeds `confirmMaxAge`, `msgCount` resets to `0` before the next increment.
-
-**Trigger:** Status Interval Timer Event
-| Condition | Action |
-|---        |---     |
-| `Date.now() - lastPosition` > `lostAfter` | `status` = **'lost'** <br>`msgCount` = 0 <br>`lastposition` -> unchanged |
-| `Date.now() - lastPosition` > `removeAfter` | `status` = **'remove'** <br>`msgCount` = 0 <br>`lastposition` -> unchanged <br> delete target from map |
 
 ### Target Selection
 ``` typescript
@@ -137,11 +143,3 @@ const AIS_CONTEXT_PREFIXES = [
   'aircraft.*'
 ];
 ```
-
-### State Publishing
-The plugin emits Signal K deltas to the target context with:
-
-- Path: `sensors.ais.status`
-- Values: `unconfirmed`, `confirmed`, `lost`, `remove`
-
-Updates are only sent when the status value changes.
