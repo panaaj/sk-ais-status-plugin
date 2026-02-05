@@ -14,16 +14,21 @@ import {
 
 interface SKAisApp extends ServerAPI {}
 
+/**
+ * In-memory tracking data for a target context.
+ * @property lastPosition Timestamp (ms) of last received position
+ * @property msgCount Number of recent position messages counted toward confirmation
+ */
 interface TargetDef {
   lastPosition: number
   msgCount: number
 }
 
 /**
- * @property confirmAfterMsgs Number of messages to receive before status is set to "confirmed"
- * @property confirmMaxAge Maximum interval (msec) between transmitted messages
- * @property lostAfter Maximum interval (msec) between received messages before status is set to "lost"
- * @property removeAfter Maximum interval (msec) between received messages before status is set to "remove"
+ * @property confirmAfterMsgs Number of messages to receive before status is set to "confirmed".
+ * @property confirmMaxAge Maximum gap (msec) between received messages while unconfirmed before confirmation process is reset.
+ * @property lostAfter Maximum interval (msec) between received messages before status is set to "lost".
+ * @property removeAfter Maximum interval (msec) between received messages before status is set to "remove".
  */
 interface ClassDefault {
   confirmAfterMsgs: number
@@ -193,7 +198,7 @@ module.exports = (server: SKAisApp): Plugin => {
     }
 
     if (delta.context === self) {
-      console.log('self:', self)
+      server.debug(`*** Ignoring self message`)
       return
     }
     delta.updates.forEach((u: Update) => {
@@ -224,9 +229,23 @@ module.exports = (server: SKAisApp): Plugin => {
     const target: TargetDef = targets.get(context) as TargetDef
     if (!target) return
 
-    const msgNo = target.msgCount + 1
     const aisClass = getAisClass(context)
-    target.lastPosition = Date.now()
+    const now = Date.now()
+
+    if (target.msgCount > 0 && target.msgCount < AIS_CLASS_DEFAULTS[aisClass].confirmAfterMsgs) {
+      const elapse = now - target.lastPosition
+      if (elapse > AIS_CLASS_DEFAULTS[aisClass].confirmMaxAge) {
+        server.debug(
+          `*** Confirm max age exceeded (${elapse} ms > ${AIS_CLASS_DEFAULTS[aisClass].confirmMaxAge} ms) -> reset confirmation`,
+          context,
+          aisClass
+        )
+        target.msgCount = 0
+      }
+    }
+
+    const msgNo = target.msgCount + 1
+    target.lastPosition = now
 
     // confirmMsg threshold met?
     if (msgNo < AIS_CLASS_DEFAULTS[aisClass].confirmAfterMsgs) {
@@ -235,10 +254,15 @@ module.exports = (server: SKAisApp): Plugin => {
         context,
         aisClass
       )
-      target.msgCount++
+      target.msgCount = msgNo
       emitAisStatus(context, AIS_STATUS.unconfirmed)
     } else {
-      //server.debug('*** -> confirmed', target.msgCount, context, aisClass)
+      server.debug(
+        `*** Msg Threshold (${msgNo} of ${AIS_CLASS_DEFAULTS[aisClass].confirmAfterMsgs}) met -> confirmed`,
+        context,
+        aisClass
+      )
+      target.msgCount = AIS_CLASS_DEFAULTS[aisClass].confirmAfterMsgs
       emitAisStatus(context, AIS_STATUS.confirmed)
     }
     targets.set(context, target)
@@ -259,16 +283,13 @@ module.exports = (server: SKAisApp): Plugin => {
    * Check and update AIS target(s) status
    */
   const checkStatus = () => {
-    const rmIds: Context[] = []
     targets.forEach((v: TargetDef, k: Context) => {
       const aisClass = getAisClass(k)
       const tDiff = Date.now() - v.lastPosition
       if (tDiff >= AIS_CLASS_DEFAULTS[aisClass].removeAfter) {
-        rmIds.push(k)
-        v.msgCount = 0
         emitAisStatus(k, AIS_STATUS.remove)
+        targets.delete(k)
       } else if (tDiff >= AIS_CLASS_DEFAULTS[aisClass].lostAfter) {
-        rmIds.push(k)
         v.msgCount = 0
         emitAisStatus(k, AIS_STATUS.lost)
       }

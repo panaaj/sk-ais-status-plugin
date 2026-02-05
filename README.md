@@ -1,59 +1,79 @@
 # Signal K AIS Status Plugin:
+This plugin evaluates AIS target reporting continuity and maintains a per-target tracking state using class-specific timing thresholds. It publishes `sensors.ais.status` deltas to Signal K, enabling consuming applications to assess target validity, reliability, and reporting continuity.
+
+## State Interpretation (Clients)
+Client applications are free to interpret the state, but the intended UX is:
+
+- `unconfirmed`: show the target, but de-emphasize it (e.g. faded / dotted / “suspect”). Avoid using it for alarms until it becomes confirmed.
+- `confirmed`: show normally and treat as an active track.
+- `lost`: keep showing the last known position briefly, but clearly indicate staleness (e.g. greyed out with “age since last update”). Typically suppress CPA/guard-zone style alarms for lost targets.
+- `remove`: remove the target from display and lists.
+
+Keeping `unconfirmed` and `lost` targets visible (but styled differently) helps avoid clutter from one-off decodes while still preserving situational awareness when reception is intermittent.
 
 ## About
-This plugin evaluates AIS target reporting continuity and maintains a per-target tracking state using class-specific timing thresholds. It publishes target tracking ***(metadata or path value???)*** to Signal K, enabling consuming applications to assess target validity, reliability, and reporting continuity.
+AIS reception is often intermittent (collisions, range, antenna shadowing), so a single position report does not necessarily mean a target is reliably tracked, and an old position may be unsafe to treat as current. The published state (`unconfirmed`, `confirmed`, `lost`, `remove`) lets clients display and filter targets appropriately and avoid “ghost” or stale tracks.
 
 ## AIS Target State Management
 The plugin applies standardized timing and continuity rules to manage AIS targets throughout their tracking lifecycle. Targets are created on first reception, transition to a confirmed tracking state after sufficient report continuity, and are marked as lost when expected reports are no longer received. The resulting tracking state is continuously updated and published for use by downstream consumers.
 
 ### Sources (input scope)
-Subscribes to all delta of with the following context to determine which entities/updates are tracked:
+Subscribes to deltas with the following contexts to determine which entities/updates are tracked:
 - vessels
-- AtoNs
-- basestations
-- SAR
+- atons
+- shore.basestations
+- sar
 - aircraft
 
 ### target identity & indexing (stable identity)
-Context (atons.urn:mrn:imo:mmsi:*) is the plugin's AIS target registry primary key. One item per AIS context. The context is used to funnel all delta updates onto one map object for fast computation. MMSI is indexed when present to unify identity and detect conflicts (such as MMSI reuse issues).
-
-Using context as the primary key has the benefit of being able to pre populate tracks with data before receiving the MMSI delta.
-
-NOTE for discussion: We could extract the MMSI from the context string straight away/before we get the MMSI delta. This would speed up AIS tracks publishing (we need position and cog minimum), although the tracks would posses little information at that point.
+The Signal K `context` string is the primary key for in-memory tracking. One item per context. No MMSI indexing or conflict handling is performed by the plugin.
 
 ### Position report rules (message quality)
-msgCount increments only if position timestamps differ by >500 ms; each valid report updates lastPositionAt.
+Each `navigation.position` update advances the tracking state and updates `lastPosition`.
 
 ### State thresholds by class (reliability tuning)
 Class A confirms quickly and times out quickly; Class B confirms slower and times out slower.
 
 ### State machine (status consistency)
-MMSI conflict or not enough message received -> force unconfirmed state. Otherwise confirm if enough reports within threshold, mark lost after a periode no position is received, mark remove after a longer period without position..
+If not enough messages are received within `confirmMaxAge`, the confirmation process resets and the target remains `unconfirmed`. Once enough messages are received, status becomes `confirmed`. Targets become `lost` after a period of silence and `remove` after a longer period without position.
 
-### Removal (cleanup)
-It's up to the client to determine who it reacts to target state remove.
-
-### Timing & publication (ressource consumption)
-Status evaluation runs at an interval short enough to accomodate the lowest `confirmMaxAge` value.
+### Timing & publication (resource consumption)
+Status evaluation runs on a fixed interval and applies `lostAfter` and `removeAfter` thresholds.
 
 ## State Management parameters
 
 ### Device Class Processing Definition
 ``` typescript
-const AIS_DEFAULTS = {
-  classA: {
+const AIS_CLASS_DEFAULTS = {
+  A: {
     confirmAfterMsgs: 2,
-    confirmMaxAge: 30,      // s
-    lostAfter: 60,          // s
-    removeAfter: 180,       // s
-    interpHz: 1
+    confirmMaxAge: 180000,  // ms
+    lostAfter: 360000,      // ms
+    removeAfter: 540000     // ms
   },
-  classB: {
+  B: {
     confirmAfterMsgs: 3,
-    confirmMaxAge: 90,      // s
-    lostAfter: 180,         // s
-    removeAfter: 600,       // s
-    interpHz: 0.5
+    confirmMaxAge: 180000,  // ms
+    lostAfter: 360000,      // ms
+    removeAfter: 540000     // ms
+  },
+  ATON: {
+    confirmAfterMsgs: 1,
+    confirmMaxAge: 180000,  // ms
+    lostAfter: 900000,      // ms
+    removeAfter: 3600000    // ms
+  },
+  BASE: {
+    confirmAfterMsgs: 1,
+    confirmMaxAge: 10000,   // ms
+    lostAfter: 30000,       // ms
+    removeAfter: 180000     // ms
+  },
+  SAR: {
+    confirmAfterMsgs: 1,
+    confirmMaxAge: 10000,   // ms
+    lostAfter: 30000,       // ms
+    removeAfter: 180000     // ms
   }
 }
 ```
@@ -63,25 +83,32 @@ const AIS_DEFAULTS = {
 **Trigger:** `<context>.navigation.position` received
 | Condition | Action |
 |---        |---     |
-| `msgCount` < `confirmAfterMsgs` | `status` = **'unconfirmed'** <br>`msgCount` -> increment <br>`lastposition` = `Date.now()` |
-| `msgCount` >= `confirmAfterMsgs` | `status` = **'confirmed'** <br>`msgCount` -> unchanged <br>`lastposition` = `Date.now()`
+| `msgCount` < `confirmAfterMsgs` | `status` = **'unconfirmed'** <br>`msgCount` -> increment <br>`lastPosition` = `Date.now()` |
+| `msgCount` >= `confirmAfterMsgs` | `status` = **'confirmed'** <br>`msgCount` -> capped at `confirmAfterMsgs` <br>`lastPosition` = `Date.now()`
+
+If the time gap between unconfirmed messages exceeds `confirmMaxAge`, `msgCount` resets to `0` before the next increment.
 
 **Trigger:** Status Interval Timer Event
 | Condition | Action |
 |---        |---     |
-| `Date.now() - lastPosition` > `confirmMaxAge` | `status` = **??** <br>`msgCount` -> **??** <br>`lastposition` -> unchanged |
 | `Date.now() - lastPosition` > `lostAfter` | `status` = **'lost'** <br>`msgCount` = 0 <br>`lastposition` -> unchanged |
-| `Date.now() - lastPosition` > `removeAfter` | `status` = **'remove'** <br>`msgCount` = 0 <br>`lastposition` -> unchanged |
+| `Date.now() - lastPosition` > `removeAfter` | `status` = **'remove'** <br>`msgCount` = 0 <br>`lastposition` -> unchanged <br> delete target from map |
 
 ### Target Selection
 ``` typescript
 const AIS_CONTEXT_PREFIXES = [
-  'atons.urn:mrn:imo:mmsi:',
-  'shore.basestations.urn:mrn:imo:mmsi:',
-  'vessels.urn:mrn:imo:mmsi:',
-  'sar.urn:mrn:imo:mmsi:',
-  'aircraft.urn:mrn:imo:mmsi:'
+  'atons.*',
+  'shore.basestations.*',
+  'vessels.*',
+  'sar.*',
+  'aircraft.*'
 ];
 ```
 
 ### State Publishing
+The plugin emits Signal K deltas to the target context with:
+
+- Path: `sensors.ais.status`
+- Values: `unconfirmed`, `confirmed`, `lost`, `remove`
+
+Updates are only sent when the status value changes.
