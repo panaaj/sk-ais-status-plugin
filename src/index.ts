@@ -198,7 +198,6 @@ module.exports = (server: SKAisApp): Plugin => {
     }
 
     if (delta.context === self) {
-      server.debug(`*** Ignoring self message`)
       return
     }
     delta.updates.forEach((u: Update) => {
