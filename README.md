@@ -105,6 +105,9 @@ There are two processes that generate delta updates:
 
 ## State Management parameters
 
+### Plugin settings
+- `confirmMaxAgeRatio` (number, default `1.1`): Multiplier applied to `confirmMaxAge` for all AIS classes. Example: `1.1` adds a 10% margin before ignoring a message in the confirmation process.
+
 ### Device Class Processing Definition
 ``` typescript
 const AIS_CLASS_DEFAULTS = {

@@ -104,10 +104,22 @@ const classFromContext = (context: Context): AISClass => {
 const STATUS_CHECK_INTERVAL = 5000
 
 const CONFIG_SCHEMA = {
-  properties: {}
+  properties: {
+    confirmMaxAgeRatio: {
+      type: 'number',
+      title: 'Confirmation max age margin',
+      description: 'Multiplier applied to the maximum message age threshold of the target confirmation process (e.g., 1.1 = +10%). Applied to all AIS classes.',
+      default: 1.1,
+      minimum: 0.1
+    }
+  }
 }
 
 const CONFIG_UISCHEMA = {}
+
+const DEFAULT_SETTINGS = {
+  confirmMaxAgeRatio: 1.1
+}
 
 module.exports = (server: SKAisApp): Plugin => {
   let subscriptions: any[] = [] // stream subscriptions
@@ -126,7 +138,7 @@ module.exports = (server: SKAisApp): Plugin => {
     }
   }
 
-  let settings: any = {}
+  let settings: any = { ...DEFAULT_SETTINGS }
   let self: string = ''
   let targets: Map<Context, TargetDef> = new Map()
 
@@ -134,7 +146,7 @@ module.exports = (server: SKAisApp): Plugin => {
     try {
       server.debug(`${plugin.name} starting.......`)
       if (options) {
-        settings = options
+        settings = { ...DEFAULT_SETTINGS, ...options }
       } else {
         // save defaults if no options loaded
         server.savePluginOptions(settings, () => {
@@ -144,8 +156,8 @@ module.exports = (server: SKAisApp): Plugin => {
       server.debug(`Applied configuration: ${JSON.stringify(settings)}`)
       server.setPluginStatus(`Started`)
 
-      // initialise plugin
-      initialise()
+      // initialize plugin
+      initialize()
     } catch (error) {
       const msg = `Started with errors!`
       server.setPluginError(msg)
@@ -166,10 +178,10 @@ module.exports = (server: SKAisApp): Plugin => {
   }
 
   /**
-   * initialise plugin
+   * initialize plugin
    */
-  const initialise = () => {
-    server.debug('Initialising ....')
+  const initialize = () => {
+    server.debug('Initializing ....')
     // setup subscriptions
     initSubscriptions()
     self = server.getPath('self')
@@ -178,7 +190,6 @@ module.exports = (server: SKAisApp): Plugin => {
 
   // register DELTA stream message handler
   const initSubscriptions = () => {
-    server.debug('Initialising Stream Subscriptions....')
     const subDef = [
       {
         path: 'navigation.position' as Path,
@@ -207,6 +218,8 @@ module.exports = (server: SKAisApp): Plugin => {
         subscribe: subDef
       }
     ]
+    server.debug(`Subscribing to contexts: ${subs.map((s) => s.context).join(', ')}`)
+    server.debug(`With paths: ${subDef.map((s) => `${s.path} (${s.period} ms)`).join(', ')}`)
     subs.forEach((s) => {
       server.subscriptionmanager.subscribe(s, subscriptions, onError, onMessage)
     })
@@ -253,13 +266,14 @@ module.exports = (server: SKAisApp): Plugin => {
     if (!target) return
 
     const aisClass = getAisClass(context)
+    const confirmMaxAge = getConfirmMaxAge(aisClass)
     const now = Date.now()
 
     if (target.msgCount > 0 && target.msgCount < AIS_CLASS_DEFAULTS[aisClass].confirmAfterMsgs) {
       const elapse = now - target.lastPosition
-      if (elapse > AIS_CLASS_DEFAULTS[aisClass].confirmMaxAge) {
+      if (elapse > confirmMaxAge) {
         server.debug(
-          `*** Confirm max age exceeded (${elapse} ms > ${AIS_CLASS_DEFAULTS[aisClass].confirmMaxAge} ms) -> reset confirmation`,
+          `*** Confirm max age exceeded (${elapse} ms > ${confirmMaxAge} ms) -> reset confirmation`,
           context,
           aisClass
         )
@@ -272,21 +286,23 @@ module.exports = (server: SKAisApp): Plugin => {
 
     // confirmMsg threshold met?
     if (msgNo < AIS_CLASS_DEFAULTS[aisClass].confirmAfterMsgs) {
-      server.debug(
-        `*** Msg Threshold (${msgNo} of ${AIS_CLASS_DEFAULTS[aisClass].confirmAfterMsgs}) not met -> unconfirmed`,
-        context,
-        aisClass
-      )
       target.msgCount = msgNo
-      emitAisStatus(context, AIS_STATUS.unconfirmed)
+      if (emitAisStatus(context, AIS_STATUS.unconfirmed)) {
+        server.debug(
+          `*** Threshold not met (${msgNo}/${AIS_CLASS_DEFAULTS[aisClass].confirmAfterMsgs}) -> unconfirmed`,
+          context,
+          aisClass
+        )
+      }
     } else {
-      server.debug(
-        `*** Msg Threshold (${msgNo} of ${AIS_CLASS_DEFAULTS[aisClass].confirmAfterMsgs}) met -> confirmed`,
-        context,
-        aisClass
-      )
       target.msgCount = AIS_CLASS_DEFAULTS[aisClass].confirmAfterMsgs
-      emitAisStatus(context, AIS_STATUS.confirmed)
+      if (emitAisStatus(context, AIS_STATUS.confirmed)) {
+        server.debug(
+          `*** Threshold met (${msgNo}/${AIS_CLASS_DEFAULTS[aisClass].confirmAfterMsgs}) -> confirmed`,
+          context,
+          aisClass
+        )
+      }
     }
     targets.set(context, target)
   }
@@ -304,6 +320,14 @@ module.exports = (server: SKAisApp): Plugin => {
     return classFromContext(context)
   }
 
+  const getConfirmMaxAge = (aisClass: AISClass): number => {
+    const ratio = Number(settings.confirmMaxAgeRatio)
+    if (!Number.isFinite(ratio) || ratio <= 0) {
+      return AIS_CLASS_DEFAULTS[aisClass].confirmMaxAge
+    }
+    return Math.round(AIS_CLASS_DEFAULTS[aisClass].confirmMaxAge * ratio)
+  }
+
   /**
    * Check and update AIS target(s) status
    */
@@ -312,11 +336,15 @@ module.exports = (server: SKAisApp): Plugin => {
       const aisClass = getAisClass(k)
       const tDiff = Date.now() - v.lastPosition
       if (tDiff >= AIS_CLASS_DEFAULTS[aisClass].removeAfter) {
-        emitAisStatus(k, AIS_STATUS.remove)
+        if (emitAisStatus(k, AIS_STATUS.remove)) {
+          server.debug('*** Remove threshold met -> remove', k, aisClass)
+        }
         targets.delete(k)
       } else if (tDiff >= AIS_CLASS_DEFAULTS[aisClass].lostAfter) {
         v.msgCount = 0
-        emitAisStatus(k, AIS_STATUS.lost)
+        if (emitAisStatus(k, AIS_STATUS.lost)) {
+          server.debug('*** Lost threshold met -> lost', k, aisClass)
+        }
       }
     })
   }
@@ -325,27 +353,29 @@ module.exports = (server: SKAisApp): Plugin => {
    * Emits sensors.ais.status delta
    * @param context Signal K context
    */
-  const emitAisStatus = (context: Context, status: AIS_STATUS) => {
+  const emitAisStatus = (context: Context, status: AIS_STATUS): boolean => {
     let currStatus = server.getPath(`${context}.sensors.ais.status`)
-    if (status !== currStatus?.value) {
-      server.handleMessage(
-        plugin.id,
-        {
-          context: context,
-          updates: [
-            {
-              values: [
-                {
-                  path: 'sensors.ais.status' as Path,
-                  value: status
-                }
-              ]
-            }
-          ]
-        },
-        SKVersion.v1
-      )
+    if (status === currStatus?.value) {
+      return false
     }
+    server.handleMessage(
+      plugin.id,
+      {
+        context: context,
+        updates: [
+          {
+            values: [
+              {
+                path: 'sensors.ais.status' as Path,
+                value: status
+              }
+            ]
+          }
+        ]
+      },
+      SKVersion.v1
+    )
+    return true
   }
 
   return plugin
