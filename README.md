@@ -34,6 +34,16 @@ Each `navigation.position` update advances the tracking state and updates `lastP
 ### State thresholds by class (reliability tuning)
 Class A confirms quickly and times out quickly; Class B confirms slower and times out slower, etc. See [Device Class Processing Definition](#device-class-processing-definition) for class details. 
 
+### Class resolution (source vs fallback)
+The plugin prefers `sensors.ais.class` when it is present and one of the supported values. If it is missing or unsupported, the class falls back to the target context. Unsupported values are logged at debug level.
+
+Fallback mapping:
+- `atons.*` -> `ATON`
+- `shore.basestations.*` -> `BASE`
+- `sar.*` -> `SAR`
+- `aircraft.*` -> `AIRCRAFT`
+- otherwise -> `B`
+
 ### State machine (status consistency)
 *Prior to the first message, status will not exist.*
 - unconfirmed = A position has been received, but the minimum message threshold has not been met.
@@ -123,6 +133,12 @@ const AIS_CLASS_DEFAULTS = {
     removeAfter: 180000     // ms
   },
   SAR: {
+    confirmAfterMsgs: 1,
+    confirmMaxAge: 10000,   // ms
+    lostAfter: 30000,       // ms
+    removeAfter: 180000     // ms
+  },
+  AIRCRAFT: {
     confirmAfterMsgs: 1,
     confirmMaxAge: 10000,   // ms
     lostAfter: 30000,       // ms

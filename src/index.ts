@@ -44,7 +44,9 @@ enum AIS_STATUS {
   remove = 'remove'
 }
 
-const AIS_CLASS_DEFAULTS: Record<string, ClassDefault> = {
+type AISClass = 'A' | 'B' | 'ATON' | 'BASE' | 'SAR' | 'AIRCRAFT'
+
+const AIS_CLASS_DEFAULTS: Record<AISClass, ClassDefault> = {
   A: {
     confirmAfterMsgs: 2,
     confirmMaxAge: 3 * 60000, // 3 min when moored, < 10 sec when moving)
@@ -74,7 +76,29 @@ const AIS_CLASS_DEFAULTS: Record<string, ClassDefault> = {
     confirmMaxAge: 10000, // 10 sec nominal
     lostAfter: 30000,
     removeAfter: 3 * 60000
+  },
+  AIRCRAFT: {
+    confirmAfterMsgs: 1,
+    confirmMaxAge: 10000, // treat similarly to SAR/BASE (fast turnover)
+    lostAfter: 30000,
+    removeAfter: 3 * 60000
   }
+}
+
+const isAISClass = (value: unknown): value is AISClass =>
+  value === 'A' ||
+  value === 'B' ||
+  value === 'ATON' ||
+  value === 'BASE' ||
+  value === 'SAR' ||
+  value === 'AIRCRAFT'
+
+const classFromContext = (context: Context): AISClass => {
+  if (context.startsWith('atons.')) return 'ATON'
+  if (context.startsWith('shore.basestations.')) return 'BASE'
+  if (context.startsWith('sar.')) return 'SAR'
+  if (context.startsWith('aircraft.')) return 'AIRCRAFT'
+  return 'B'
 }
 
 const STATUS_CHECK_INTERVAL = 5000
@@ -270,12 +294,14 @@ module.exports = (server: SKAisApp): Plugin => {
   /**
    * Return AIS Class of supplied Context
    * @param context Signal K context
-   * @returns AIS class (defaults to 'A' if missing or invalid)
+   * @returns AIS class (falls back to context-derived class)
    */
-  const getAisClass = (context: Context): string => {
-    let p = server.getPath(`${context}.sensors.ais.class`)
-    let c = p?.value ?? 'A'
-    return Object.keys(AIS_CLASS_DEFAULTS).includes(c) ? c : 'A'
+  const getAisClass = (context: Context): AISClass => {
+    const aisClass = server.getPath(`${context}.sensors.ais.class`)?.value
+    if (isAISClass(aisClass)) {
+      return aisClass
+    }
+    return classFromContext(context)
   }
 
   /**
