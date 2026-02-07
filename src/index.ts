@@ -14,16 +14,21 @@ import {
 
 interface SKAisApp extends ServerAPI {}
 
+/**
+ * In-memory tracking data for a target context.
+ * @property lastPosition Timestamp (ms) of last received position
+ * @property msgCount Number of recent position messages counted toward confirmation
+ */
 interface TargetDef {
   lastPosition: number
   msgCount: number
 }
 
 /**
- * @property confirmAfterMsgs Number of messages to receive before status is set to "confirmed"
- * @property confirmMaxAge Maximum interval (msec) between transmitted messages
- * @property lostAfter Maximum interval (msec) between received messages before status is set to "lost"
- * @property removeAfter Maximum interval (msec) between received messages before status is set to "remove"
+ * @property confirmAfterMsgs Number of messages to receive before status is set to "confirmed".
+ * @property confirmMaxAge Maximum gap (msec) between received messages while unconfirmed before confirmation process is reset.
+ * @property lostAfter Maximum interval (msec) between received messages before status is set to "lost".
+ * @property removeAfter Maximum interval (msec) between received messages before status is set to "remove".
  */
 interface ClassDefault {
   confirmAfterMsgs: number
@@ -39,7 +44,9 @@ enum AIS_STATUS {
   remove = 'remove'
 }
 
-const AIS_CLASS_DEFAULTS: Record<string, ClassDefault> = {
+type AISClass = 'A' | 'B' | 'ATON' | 'BASE' | 'SAR' | 'AIRCRAFT'
+
+const AIS_CLASS_DEFAULTS: Record<AISClass, ClassDefault> = {
   A: {
     confirmAfterMsgs: 2,
     confirmMaxAge: 3 * 60000, // 3 min when moored, < 10 sec when moving)
@@ -69,16 +76,50 @@ const AIS_CLASS_DEFAULTS: Record<string, ClassDefault> = {
     confirmMaxAge: 10000, // 10 sec nominal
     lostAfter: 30000,
     removeAfter: 3 * 60000
+  },
+  AIRCRAFT: {
+    confirmAfterMsgs: 1,
+    confirmMaxAge: 10000, // treat similarly to SAR/BASE (fast turnover)
+    lostAfter: 30000,
+    removeAfter: 3 * 60000
   }
+}
+
+const isAISClass = (value: unknown): value is AISClass =>
+  value === 'A' ||
+  value === 'B' ||
+  value === 'ATON' ||
+  value === 'BASE' ||
+  value === 'SAR' ||
+  value === 'AIRCRAFT'
+
+const classFromContext = (context: Context): AISClass => {
+  if (context.startsWith('atons.')) return 'ATON'
+  if (context.startsWith('shore.basestations.')) return 'BASE'
+  if (context.startsWith('sar.')) return 'SAR'
+  if (context.startsWith('aircraft.')) return 'AIRCRAFT'
+  return 'B'
 }
 
 const STATUS_CHECK_INTERVAL = 5000
 
 const CONFIG_SCHEMA = {
-  properties: {}
+  properties: {
+    confirmMaxAgeRatio: {
+      type: 'number',
+      title: 'Confirmation max age margin',
+      description: 'Multiplier applied to the maximum message age threshold of the target confirmation process (e.g., 1.1 = +10%). Applied to all AIS classes.',
+      default: 1.1,
+      minimum: 0.1
+    }
+  }
 }
 
 const CONFIG_UISCHEMA = {}
+
+const DEFAULT_SETTINGS = {
+  confirmMaxAgeRatio: 1.1
+}
 
 module.exports = (server: SKAisApp): Plugin => {
   let subscriptions: any[] = [] // stream subscriptions
@@ -97,7 +138,7 @@ module.exports = (server: SKAisApp): Plugin => {
     }
   }
 
-  let settings: any = {}
+  let settings: any = { ...DEFAULT_SETTINGS }
   let self: string = ''
   let targets: Map<Context, TargetDef> = new Map()
 
@@ -105,7 +146,7 @@ module.exports = (server: SKAisApp): Plugin => {
     try {
       server.debug(`${plugin.name} starting.......`)
       if (options) {
-        settings = options
+        settings = { ...DEFAULT_SETTINGS, ...options }
       } else {
         // save defaults if no options loaded
         server.savePluginOptions(settings, () => {
@@ -115,8 +156,8 @@ module.exports = (server: SKAisApp): Plugin => {
       server.debug(`Applied configuration: ${JSON.stringify(settings)}`)
       server.setPluginStatus(`Started`)
 
-      // initialise plugin
-      initialise()
+      // initialize plugin
+      initialize()
     } catch (error) {
       const msg = `Started with errors!`
       server.setPluginError(msg)
@@ -137,10 +178,10 @@ module.exports = (server: SKAisApp): Plugin => {
   }
 
   /**
-   * initialise plugin
+   * initialize plugin
    */
-  const initialise = () => {
-    server.debug('Initialising ....')
+  const initialize = () => {
+    server.debug('Initializing ....')
     // setup subscriptions
     initSubscriptions()
     self = server.getPath('self')
@@ -149,7 +190,6 @@ module.exports = (server: SKAisApp): Plugin => {
 
   // register DELTA stream message handler
   const initSubscriptions = () => {
-    server.debug('Initialising Stream Subscriptions....')
     const subDef = [
       {
         path: 'navigation.position' as Path,
@@ -178,6 +218,8 @@ module.exports = (server: SKAisApp): Plugin => {
         subscribe: subDef
       }
     ]
+    server.debug(`Subscribing to contexts: ${subs.map((s) => s.context).join(', ')}`)
+    server.debug(`With paths: ${subDef.map((s) => `${s.path} (${s.period} ms)`).join(', ')}`)
     subs.forEach((s) => {
       server.subscriptionmanager.subscribe(s, subscriptions, onError, onMessage)
     })
@@ -193,7 +235,6 @@ module.exports = (server: SKAisApp): Plugin => {
     }
 
     if (delta.context === self) {
-      console.log('self:', self)
       return
     }
     delta.updates.forEach((u: Update) => {
@@ -224,22 +265,44 @@ module.exports = (server: SKAisApp): Plugin => {
     const target: TargetDef = targets.get(context) as TargetDef
     if (!target) return
 
-    const msgNo = target.msgCount + 1
     const aisClass = getAisClass(context)
-    target.lastPosition = Date.now()
+    const confirmMaxAge = getConfirmMaxAge(aisClass)
+    const now = Date.now()
+
+    if (target.msgCount > 0 && target.msgCount < AIS_CLASS_DEFAULTS[aisClass].confirmAfterMsgs) {
+      const elapse = now - target.lastPosition
+      if (elapse > confirmMaxAge) {
+        server.debug(
+          `*** Confirm max age exceeded (${elapse} ms > ${confirmMaxAge} ms) -> reset confirmation`,
+          context,
+          aisClass
+        )
+        target.msgCount = 0
+      }
+    }
+
+    const msgNo = target.msgCount + 1
+    target.lastPosition = now
 
     // confirmMsg threshold met?
     if (msgNo < AIS_CLASS_DEFAULTS[aisClass].confirmAfterMsgs) {
-      server.debug(
-        `*** Msg Threshold (${msgNo} of ${AIS_CLASS_DEFAULTS[aisClass].confirmAfterMsgs}) not met -> unconfirmed`,
-        context,
-        aisClass
-      )
-      target.msgCount++
-      emitAisStatus(context, AIS_STATUS.unconfirmed)
+      target.msgCount = msgNo
+      if (emitAisStatus(context, AIS_STATUS.unconfirmed)) {
+        server.debug(
+          `*** Threshold not met (${msgNo}/${AIS_CLASS_DEFAULTS[aisClass].confirmAfterMsgs}) -> unconfirmed`,
+          context,
+          aisClass
+        )
+      }
     } else {
-      //server.debug('*** -> confirmed', target.msgCount, context, aisClass)
-      emitAisStatus(context, AIS_STATUS.confirmed)
+      target.msgCount = AIS_CLASS_DEFAULTS[aisClass].confirmAfterMsgs
+      if (emitAisStatus(context, AIS_STATUS.confirmed)) {
+        server.debug(
+          `*** Threshold met (${msgNo}/${AIS_CLASS_DEFAULTS[aisClass].confirmAfterMsgs}) -> confirmed`,
+          context,
+          aisClass
+        )
+      }
     }
     targets.set(context, target)
   }
@@ -247,30 +310,41 @@ module.exports = (server: SKAisApp): Plugin => {
   /**
    * Return AIS Class of supplied Context
    * @param context Signal K context
-   * @returns AIS class (defaults to 'A' if missing or invalid)
+   * @returns AIS class (falls back to context-derived class)
    */
-  const getAisClass = (context: Context): string => {
-    let p = server.getPath(`${context}.sensors.ais.class`)
-    let c = p?.value ?? 'A'
-    return Object.keys(AIS_CLASS_DEFAULTS).includes(c) ? c : 'A'
+  const getAisClass = (context: Context): AISClass => {
+    const aisClass = server.getPath(`${context}.sensors.ais.class`)?.value
+    if (isAISClass(aisClass)) {
+      return aisClass
+    }
+    return classFromContext(context)
+  }
+
+  const getConfirmMaxAge = (aisClass: AISClass): number => {
+    const ratio = Number(settings.confirmMaxAgeRatio)
+    if (!Number.isFinite(ratio) || ratio <= 0) {
+      return AIS_CLASS_DEFAULTS[aisClass].confirmMaxAge
+    }
+    return Math.round(AIS_CLASS_DEFAULTS[aisClass].confirmMaxAge * ratio)
   }
 
   /**
    * Check and update AIS target(s) status
    */
   const checkStatus = () => {
-    const rmIds: Context[] = []
     targets.forEach((v: TargetDef, k: Context) => {
       const aisClass = getAisClass(k)
       const tDiff = Date.now() - v.lastPosition
       if (tDiff >= AIS_CLASS_DEFAULTS[aisClass].removeAfter) {
-        rmIds.push(k)
-        v.msgCount = 0
-        emitAisStatus(k, AIS_STATUS.remove)
+        if (emitAisStatus(k, AIS_STATUS.remove)) {
+          server.debug('*** Remove threshold met -> remove', k, aisClass)
+        }
+        targets.delete(k)
       } else if (tDiff >= AIS_CLASS_DEFAULTS[aisClass].lostAfter) {
-        rmIds.push(k)
         v.msgCount = 0
-        emitAisStatus(k, AIS_STATUS.lost)
+        if (emitAisStatus(k, AIS_STATUS.lost)) {
+          server.debug('*** Lost threshold met -> lost', k, aisClass)
+        }
       }
     })
   }
@@ -279,27 +353,29 @@ module.exports = (server: SKAisApp): Plugin => {
    * Emits sensors.ais.status delta
    * @param context Signal K context
    */
-  const emitAisStatus = (context: Context, status: AIS_STATUS) => {
+  const emitAisStatus = (context: Context, status: AIS_STATUS): boolean => {
     let currStatus = server.getPath(`${context}.sensors.ais.status`)
-    if (status !== currStatus?.value) {
-      server.handleMessage(
-        plugin.id,
-        {
-          context: context,
-          updates: [
-            {
-              values: [
-                {
-                  path: 'sensors.ais.status' as Path,
-                  value: status
-                }
-              ]
-            }
-          ]
-        },
-        SKVersion.v1
-      )
+    if (status === currStatus?.value) {
+      return false
     }
+    server.handleMessage(
+      plugin.id,
+      {
+        context: context,
+        updates: [
+          {
+            values: [
+              {
+                path: 'sensors.ais.status' as Path,
+                value: status
+              }
+            ]
+          }
+        ]
+      },
+      SKVersion.v1
+    )
+    return true
   }
 
   return plugin
