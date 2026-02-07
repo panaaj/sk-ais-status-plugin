@@ -85,13 +85,7 @@ const AIS_CLASS_DEFAULTS: Record<AISClass, ClassDefault> = {
   }
 }
 
-const isAISClass = (value: unknown): value is AISClass =>
-  value === 'A' ||
-  value === 'B' ||
-  value === 'ATON' ||
-  value === 'BASE' ||
-  value === 'SAR' ||
-  value === 'AIRCRAFT'
+const isAISClass = (value: unknown): value is AISClass => typeof value === 'string' && ['A', 'B' , 'ATON', 'BASE', 'SAR', 'AIRCRAFT'].includes(value)
 
 const classFromContext = (context: Context): AISClass => {
   if (context.startsWith('atons.')) return 'ATON'
