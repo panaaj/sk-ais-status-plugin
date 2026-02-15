@@ -85,7 +85,9 @@ const AIS_CLASS_DEFAULTS: Record<AISClass, ClassDefault> = {
   }
 }
 
-const isAISClass = (value: unknown): value is AISClass => typeof value === 'string' && ['A', 'B' , 'ATON', 'BASE', 'SAR', 'AIRCRAFT'].includes(value)
+const isAISClass = (value: unknown): value is AISClass =>
+  typeof value === 'string' &&
+  ['A', 'B', 'ATON', 'BASE', 'SAR', 'AIRCRAFT'].includes(value)
 
 const classFromContext = (context: Context): AISClass => {
   if (context.startsWith('atons.')) return 'ATON'
@@ -102,7 +104,8 @@ const CONFIG_SCHEMA = {
     confirmMaxAgeRatio: {
       type: 'number',
       title: 'Confirmation max age margin',
-      description: 'Multiplier applied to the maximum message age threshold of the target confirmation process (e.g., 1.1 = +10%). Applied to all AIS classes.',
+      description:
+        'Multiplier applied to the maximum message age threshold of the target confirmation process (e.g., 1.1 = +10%). Applied to all AIS classes.',
       default: 1.1,
       minimum: 0.1
     }
@@ -118,6 +121,19 @@ const DEFAULT_SETTINGS = {
 module.exports = (server: SKAisApp): Plugin => {
   let subscriptions: any[] = [] // stream subscriptions
   let timers: Array<NodeJS.Timeout> = [] // interval timers
+
+  const getStringPath = (path: string): string | undefined => {
+    const result = server.getPath(path)
+    return typeof result === 'string' ? result : undefined
+  }
+
+  const getPathValue = <T>(path: string): T | undefined => {
+    const result = server.getPath(path)
+    if (result && typeof result === 'object' && 'value' in result) {
+      return (result as { value: T }).value
+    }
+    return undefined
+  }
 
   const plugin: Plugin = {
     id: 'sk-ais-status',
@@ -178,7 +194,7 @@ module.exports = (server: SKAisApp): Plugin => {
     server.debug('Initializing ....')
     // setup subscriptions
     initSubscriptions()
-    self = server.getPath('self')
+    self = getStringPath('self') ?? ''
     timers.push(setInterval(() => checkStatus(), STATUS_CHECK_INTERVAL))
   }
 
@@ -212,8 +228,14 @@ module.exports = (server: SKAisApp): Plugin => {
         subscribe: subDef
       }
     ]
-    server.debug(`Subscribing to contexts: ${subs.map((s) => s.context).join(', ')}`)
-    server.debug(`With paths: ${subDef.map((s) => `${s.path} (${s.period} ms)`).join(', ')}`)
+    server.debug(
+      `Subscribing to contexts: ${subs.map((s) => s.context).join(', ')}`
+    )
+    server.debug(
+      `With paths: ${subDef
+        .map((s) => `${s.path} (${s.period} ms)`)
+        .join(', ')}`
+    )
     subs.forEach((s) => {
       server.subscriptionmanager.subscribe(s, subscriptions, onError, onMessage)
     })
@@ -263,7 +285,10 @@ module.exports = (server: SKAisApp): Plugin => {
     const confirmMaxAge = getConfirmMaxAge(aisClass)
     const now = Date.now()
 
-    if (target.msgCount > 0 && target.msgCount < AIS_CLASS_DEFAULTS[aisClass].confirmAfterMsgs) {
+    if (
+      target.msgCount > 0 &&
+      target.msgCount < AIS_CLASS_DEFAULTS[aisClass].confirmAfterMsgs
+    ) {
       const elapse = now - target.lastPosition
       if (elapse > confirmMaxAge) {
         server.debug(
@@ -307,7 +332,7 @@ module.exports = (server: SKAisApp): Plugin => {
    * @returns AIS class (falls back to context-derived class)
    */
   const getAisClass = (context: Context): AISClass => {
-    const aisClass = server.getPath(`${context}.sensors.ais.class`)?.value
+    const aisClass = getPathValue<unknown>(`${context}.sensors.ais.class`)
     if (isAISClass(aisClass)) {
       return aisClass
     }
@@ -348,8 +373,8 @@ module.exports = (server: SKAisApp): Plugin => {
    * @param context Signal K context
    */
   const emitAisStatus = (context: Context, status: AIS_STATUS): boolean => {
-    let currStatus = server.getPath(`${context}.sensors.ais.status`)
-    if (status === currStatus?.value) {
+    const currStatus = getPathValue<AIS_STATUS>(`${context}.sensors.ais.status`)
+    if (status === currStatus) {
       return false
     }
     server.handleMessage(
