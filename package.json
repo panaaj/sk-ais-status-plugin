@@ -12,6 +12,8 @@
     "scripts": {
         "build": "tsc",
         "build-declaration": "tsc --declaration --allowJs false",
+        "typecheck": "tsc --noEmit",
+        "lint": "prettier --check src/*",
         "watch": "npm run build -- -w",
         "test": "echo \"Error: no test specified\" && exit 1",
         "start": "npm run build -- -w",
